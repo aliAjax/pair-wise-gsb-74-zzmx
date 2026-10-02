@@ -12,6 +12,7 @@ const store = useGovernanceStore()
 const editorVisible = ref(false)
 const form = reactive<DeprecationPlan>({
   id: '',
+  rev: 0,
   eventId: '',
   replacementEventId: '',
   reason: '',
@@ -20,6 +21,7 @@ const form = reactive<DeprecationPlan>({
   retireAt: '',
   status: 'planned',
   migrationNote: '',
+  updatedAt: '',
 })
 
 const statusOptions = [
@@ -48,6 +50,7 @@ const openEditor = (plan?: DeprecationPlan): void => {
       ? structuredClone(plan)
       : {
           id: '',
+          rev: 0,
           eventId: store.data.events.find((event) => event.status === 'published')?.id ?? '',
           replacementEventId: '',
           reason: '',
@@ -56,6 +59,7 @@ const openEditor = (plan?: DeprecationPlan): void => {
           retireAt: '',
           status: 'planned',
           migrationNote: '',
+          updatedAt: '',
         } satisfies DeprecationPlan,
   )
   editorVisible.value = true
@@ -76,18 +80,51 @@ const savePlan = async (): Promise<void> => {
     await MessagePlugin.error('停用日期必须晚于停采日期')
     return
   }
-  store.saveDeprecation({ ...structuredClone(form), id: form.id || createId('plan') })
+  const outcome = await store.saveDeprecation({
+    ...structuredClone(form),
+    id: form.id || createId('plan'),
+  })
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error('该废弃计划已被另一个窗口推进或取消，只接受先到版本，已为你刷新')
+    editorVisible.value = false
+    return
+  }
   editorVisible.value = false
-  await MessagePlugin.success('废弃计划已保存')
+  await MessagePlugin.success('废弃计划已保存，冻结了该阶段的在审候选旧审批与迁移确认已立即失效')
 }
 
 const advance = async (plan: DeprecationPlan): Promise<void> => {
   const sequence: DeprecationPlan['status'][] = ['planned', 'announced', 'stopped', 'retired']
   const index = sequence.indexOf(plan.status)
-  const next = plan.status === 'cancelled' ? 'planned' : sequence[Math.min(index + 1, 3)]
+  const next = sequence[Math.min(index + 1, 3)]
   if (!next) return
-  store.saveDeprecation({ ...plan, status: next })
-  await MessagePlugin.success(`废弃计划已推进到 ${next}`)
+  const outcome = await store.saveDeprecation({ ...plan, status: next })
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error('该计划已被另一个窗口先推进，只接受先到版本')
+    return
+  }
+  await MessagePlugin.success(`废弃计划已推进到 ${next}，受影响候选已按旧阶段冻结并使旧门禁失效`)
+}
+
+const cancelPlan = async (plan: DeprecationPlan): Promise<void> => {
+  const outcome = await store.saveDeprecation({ ...plan, status: 'cancelled' })
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error('该计划已被另一个窗口先处理，只接受先到版本')
+    return
+  }
+  await MessagePlugin.success('废弃计划已取消，冻结该计划的候选旧门禁已立即失效')
 }
 </script>
 
@@ -159,6 +196,15 @@ const advance = async (plan: DeprecationPlan): Promise<void> => {
           <t-button variant="outline" size="small" @click="openEditor(item.plan)">
             <template #icon><Edit1Icon /></template>
             编辑
+          </t-button>
+          <t-button
+            v-if="item.plan.status !== 'retired' && item.plan.status !== 'cancelled'"
+            theme="default"
+            variant="outline"
+            size="small"
+            @click="cancelPlan(item.plan)"
+          >
+            取消计划
           </t-button>
           <t-button
             v-if="item.plan.status !== 'retired' && item.plan.status !== 'cancelled'"

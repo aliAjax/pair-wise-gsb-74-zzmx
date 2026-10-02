@@ -1,5 +1,7 @@
 import type {
   AuditEvent,
+  CandidateDeprecationSnapshot,
+  CandidateEventSnapshot,
   DownstreamDependency,
   EventDefinition,
   EventVersionSnapshot,
@@ -779,9 +781,49 @@ const baselines: EventVersionSnapshot[] = [
   },
 ]
 
+const freezeSeedEvent = (eventId: string, frozenAt: string): CandidateEventSnapshot => {
+  const event = events.find((item) => item.id === eventId)!
+  return {
+    eventId: event.id,
+    key: event.key,
+    displayName: event.displayName,
+    category: event.category,
+    description: event.description,
+    trigger: event.trigger,
+    status: event.status,
+    version: event.version,
+    owner: event.owner,
+    properties: structuredClone(event.properties),
+    platformRules: structuredClone(event.platformRules),
+    frozenAt,
+  }
+}
+
+const freezeSeedDeprecation = (
+  planId: string,
+  eventId: string,
+  replacementEventId: string | undefined,
+  status: 'planned' | 'announced' | 'stopped' | 'retired',
+  stopCollectAt: string,
+  retireAt: string,
+  migrationNote: string,
+  frozenAt: string,
+): CandidateDeprecationSnapshot => ({
+  planId,
+  eventId,
+  replacementEventId,
+  status,
+  stopCollectAt,
+  retireAt,
+  migrationNote,
+  frozenAt,
+})
+
 const releases: ReleaseCandidate[] = [
   {
     id: 'rel-001',
+    rev: 1,
+    baseRevision: 7,
     version: '2026.10.0',
     title: '十月核心埋点契约升级',
     status: 'reviewing',
@@ -810,6 +852,7 @@ const releases: ReleaseCandidate[] = [
     migrationConfirmations: [
       {
         id: 'mig-001',
+        epoch: 0,
         dependencyId: 'dep-001',
         version: '2026.10.0',
         status: 'pending',
@@ -818,6 +861,7 @@ const releases: ReleaseCandidate[] = [
       },
       {
         id: 'mig-002',
+        epoch: 0,
         dependencyId: 'dep-004',
         version: '2026.10.0',
         status: 'confirmed',
@@ -827,6 +871,7 @@ const releases: ReleaseCandidate[] = [
       },
       {
         id: 'mig-003',
+        epoch: 0,
         dependencyId: 'dep-005',
         version: '2026.10.0',
         status: 'pending',
@@ -835,6 +880,7 @@ const releases: ReleaseCandidate[] = [
       },
       {
         id: 'mig-004',
+        epoch: 0,
         dependencyId: 'dep-006',
         version: '2026.10.0',
         status: 'pending',
@@ -873,10 +919,29 @@ const releases: ReleaseCandidate[] = [
         comment: '',
       },
     ],
+    eventSnapshots: [
+      freezeSeedEvent('evt-001', '2026-09-25T10:30:00+08:00'),
+      freezeSeedEvent('evt-003', '2026-09-25T10:30:00+08:00'),
+      freezeSeedEvent('evt-005', '2026-09-25T10:30:00+08:00'),
+    ],
+    deprecationSnapshots: [
+      freezeSeedDeprecation(
+        'plan-001',
+        'evt-005',
+        'evt-004',
+        'announced',
+        '2026-11-30',
+        '2026-12-31',
+        '历史活动页分批切换，兼容集保留只读映射至 2027 年 3 月。',
+        '2026-09-25T10:30:00+08:00',
+      ),
+    ],
     createdAt: '2026-09-25T10:30:00+08:00',
   },
   {
     id: 'rel-000',
+    rev: 1,
+    baseRevision: 1,
     version: '2026.09.0',
     title: '九月埋点基线',
     status: 'published',
@@ -886,6 +951,7 @@ const releases: ReleaseCandidate[] = [
     migrationConfirmations: [
       {
         id: 'mig-005',
+        epoch: 0,
         dependencyId: 'dep-002',
         version: '2026.09.0',
         status: 'confirmed',
@@ -895,6 +961,7 @@ const releases: ReleaseCandidate[] = [
       },
       {
         id: 'mig-006',
+        epoch: 0,
         dependencyId: 'dep-003',
         version: '2026.09.0',
         status: 'confirmed',
@@ -937,6 +1004,12 @@ const releases: ReleaseCandidate[] = [
         createdAt: '2026-08-30T11:50:00+08:00',
       },
     ],
+    eventSnapshots: [
+      freezeSeedEvent('evt-002', '2026-08-25T09:00:00+08:00'),
+      freezeSeedEvent('evt-004', '2026-08-25T09:00:00+08:00'),
+      freezeSeedEvent('evt-006', '2026-08-25T09:00:00+08:00'),
+    ],
+    deprecationSnapshots: [],
     createdAt: '2026-08-25T09:00:00+08:00',
     publishedAt: '2026-08-30T12:00:00+08:00',
   },
@@ -1027,6 +1100,7 @@ export const createSeedState = (): GovernanceState => ({
   deprecations: [
     {
       id: 'plan-001',
+      rev: 1,
       eventId: 'evt-005',
       replacementEventId: 'evt-004',
       reason: '与 coupon_apply_result 语义重复，维护两套口径增加数据成本。',
@@ -1035,6 +1109,7 @@ export const createSeedState = (): GovernanceState => ({
       retireAt: '2026-12-31',
       status: 'announced',
       migrationNote: '历史活动页分批切换，兼容集保留只读映射至 2027 年 3 月。',
+      updatedAt: '2026-09-20T16:10:00+08:00',
     },
   ],
   rollbacks: [

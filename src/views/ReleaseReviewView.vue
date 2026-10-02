@@ -7,18 +7,18 @@ import {
   ChevronRightIcon,
   CloseCircleIcon,
   DownloadIcon,
+  RefreshIcon,
 } from 'tdesign-icons-vue-next'
 import { MessagePlugin } from 'tdesign-vue-next'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { useReleaseQuery, useReleasesQuery } from '@/composables/useGovernanceQueries'
+import { useReleaseQuery } from '@/composables/useGovernanceQueries'
 import type { ReleaseApproval } from '@/models/domain'
-import { releaseReadiness } from '@/services/selectors'
+import { detectReleaseDrift, isReleasePublishable, releaseReadiness } from '@/services/selectors'
 import { useGovernanceStore } from '@/stores/governance'
 
 const store = useGovernanceStore()
 const queryClient = useQueryClient()
-const releasesQuery = useReleasesQuery()
 const releaseId = ref(
   store.data.releases.find((release) => release.status === 'reviewing')?.id ??
     store.data.releases[0]?.id ??
@@ -27,12 +27,28 @@ const releaseId = ref(
 const releaseQuery = useReleaseQuery(releaseId)
 const release = computed(
   () =>
-    releaseQuery.data.value ??
     store.data.releases.find((item) => item.id === releaseId.value) ??
+    releaseQuery.data.value ??
     null,
 )
-const releases = computed(() => releasesQuery.data.value ?? store.data.releases)
+const releases = computed(() => store.data.releases)
 const readiness = computed(() => (release.value ? releaseReadiness(release.value, store.issues) : 0))
+const drift = computed(() =>
+  release.value ? detectReleaseDrift(store.data, release.value) : null,
+)
+const frozenBaseRevision = computed(() => release.value?.baseRevision ?? 0)
+const invalidatedConfirmations = computed(
+  () => release.value?.migrationConfirmations.filter((item) => item.status === 'invalidated') ?? [],
+)
+const invalidatedApprovals = computed(
+  () => release.value?.approvals.filter((item) => item.status === 'invalidated') ?? [],
+)
+const publishBlocked = computed(() =>
+  release.value
+    ? !isReleasePublishable(store.data, release.value, store.issues)
+    : true,
+)
+const rebuilding = ref(false)
 
 const createVisible = ref(false)
 const migrationVisible = ref(false)
@@ -79,11 +95,15 @@ const createRelease = async (): Promise<void> => {
     await MessagePlugin.error('版本号、标题和事件范围不能为空')
     return
   }
-  const created = store.createRelease(createForm.version, createForm.title, createForm.eventIds)
-  releaseId.value = created.id
+  const outcome = await store.createRelease(createForm.version, createForm.title, createForm.eventIds)
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  releaseId.value = outcome.result.id
   createVisible.value = false
   await invalidate()
-  await MessagePlugin.success('发布候选已创建，已生成下游迁移清单')
+  await MessagePlugin.success('发布候选已创建：契约修订、属性、平台规则与废弃阶段已冻结')
 }
 
 const openMigration = (confirmationId: string): void => {
@@ -102,15 +122,36 @@ const confirmMigration = async (): Promise<void> => {
     await MessagePlugin.error('确认人和迁移说明不能为空')
     return
   }
-  store.confirmMigration(
+  const outcome = await store.confirmMigration(
     release.value.id,
     migrationForm.confirmationId,
     migrationForm.reviewer,
     migrationForm.note,
   )
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error('该迁移确认已随新契约修订失效，请先按新修订重算候选后重新确认')
+    return
+  }
   migrationVisible.value = false
   await invalidate()
   await MessagePlugin.success('下游迁移已确认')
+}
+
+const rebuild = async (): Promise<void> => {
+  if (!release.value) return
+  rebuilding.value = true
+  const outcome = await store.rebuildRelease(release.value.id)
+  rebuilding.value = false
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  await invalidate()
+  await MessagePlugin.success('候选已按新修订重算：重新冻结契约与废弃阶段，失效门禁需重新确认/审批')
 }
 
 const openApproval = (approval: ReleaseApproval): void => {
@@ -124,13 +165,22 @@ const submitApproval = async (status: ReleaseApproval['status']): Promise<void> 
     await MessagePlugin.error('审批意见不能为空')
     return
   }
-  store.updateApproval(
+  if (status === 'invalidated') return
+  const outcome = await store.updateApproval(
     release.value.id,
     singleApproval.value.role,
     status,
     singleApproval.value.actor,
     approvalComment.value,
   )
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error('该审批已随新契约修订/废弃阶段失效，请先按新修订重算候选后重新审批')
+    return
+  }
   approvalVisible.value = false
   await invalidate()
   await MessagePlugin.success(status === 'approved' ? '审批已通过' : '审批已驳回')
@@ -142,28 +192,47 @@ const batchApprove = async (): Promise<void> => {
     await MessagePlugin.error('请选择审批项并填写批量审批意见')
     return
   }
-  selectedApprovalIds.value.forEach((id) => {
+  const ids = [...selectedApprovalIds.value]
+  let rejected = 0
+  for (const id of ids) {
     const approval = release.value?.approvals.find((item) => item.id === id)
-    if (approval) {
-      store.updateApproval(
-        release.value!.id,
-        approval.role,
-        'approved',
-        approval.actor,
-        approvalComment.value,
-      )
+    if (!approval) continue
+    const outcome = await store.updateApproval(
+      release.value!.id,
+      approval.role,
+      'approved',
+      approval.actor,
+      approvalComment.value,
+    )
+    if (!outcome.ok) {
+      await MessagePlugin.error(outcome.message)
+      break
     }
-  })
+    if (!outcome.result) rejected += 1
+  }
   selectedApprovalIds.value = []
   approvalComment.value = ''
   await invalidate()
-  await MessagePlugin.success('批量审批已提交')
+  if (rejected) {
+    await MessagePlugin.warning(`${rejected} 个审批已失效，请先按新修订重算候选`)
+  } else {
+    await MessagePlugin.success('批量审批已提交')
+  }
 }
 
 const publish = async (): Promise<void> => {
   if (!release.value) return
-  if (!store.publishRelease(release.value.id)) {
-    await MessagePlugin.error('迁移确认或四角色审批尚未完成，当前不可发布')
+  const outcome = await store.publishRelease(release.value.id)
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
+  if (!outcome.result) {
+    await MessagePlugin.error(
+      drift.value?.hasDrift
+        ? '候选冻结后契约或废弃阶段已变化，请先按新修订重算并重走确认与审批'
+        : '迁移确认或四角色审批尚未全部完成（失效项不算通过），当前不可发布',
+    )
     return
   }
   await invalidate()
@@ -230,6 +299,26 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
     </section>
 
     <template v-if="release">
+      <section v-if="drift?.hasDrift" class="panel drift-banner">
+        <div>
+          <strong>候选冻结后发生变化，旧审批与迁移确认已失效，当前不可发布</strong>
+          <ul>
+            <li v-for="item in drift.eventDrifts" :key="`event-${item.eventId}`">
+              <code>{{ item.eventKey }}</code>
+              <span v-for="change in item.changes" :key="change">{{ change }}</span>
+            </li>
+            <li v-for="item in drift.deprecationDrifts" :key="`dep-${item.planId}`">
+              <code>{{ item.eventKey }}</code>
+              <span v-for="change in item.changes" :key="change">{{ change }}</span>
+            </li>
+          </ul>
+        </div>
+        <t-button theme="warning" :loading="rebuilding" @click="rebuild">
+          <template #icon><RefreshIcon /></template>
+          按新修订重算候选
+        </t-button>
+      </section>
+
       <section class="release-overview">
         <div>
           <span>版本</span>
@@ -241,8 +330,9 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
           <strong>{{ release.title }}</strong>
         </div>
         <div>
-          <span>事件范围</span>
-          <strong>{{ release.eventIds.length }} 个</strong>
+          <span>冻结契约修订</span>
+          <strong>r{{ frozenBaseRevision }}</strong>
+          <span class="muted">当前存储修订 r{{ store.revision }}</span>
         </div>
         <div>
           <span>发布就绪度</span>
@@ -250,13 +340,17 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
         </div>
         <t-button
           theme="primary"
-          :disabled="release.status === 'published' || release.status === 'rolled_back'"
+          :disabled="publishBlocked"
           @click="publish"
         >
           发布契约
           <template #suffix><ChevronRightIcon /></template>
         </t-button>
       </section>
+
+      <p v-if="release.rebuiltAt" class="rebuilt-hint">
+        候选已于 {{ new Date(release.rebuiltAt).toLocaleString() }} 按新修订重算并重新冻结契约与废弃阶段。
+      </p>
 
       <div class="release-grid">
         <section class="panel">
@@ -330,7 +424,9 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
             <div class="gate-row">
               <CheckCircleIcon
                 :class="{
-                  pending: release.migrationConfirmations.some((item) => item.status !== 'confirmed'),
+                  pending: release.migrationConfirmations.some(
+                    (item) => item.status !== 'confirmed' && item.status !== 'rejected',
+                  ),
                 }"
               />
               <div>
@@ -339,12 +435,19 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
                   {{
                     release.migrationConfirmations.filter((item) => item.status === 'confirmed').length
                   }}/{{ release.migrationConfirmations.length }} 已确认
+                  <em v-if="invalidatedConfirmations.length">
+                    （{{ invalidatedConfirmations.length }} 项已随新修订失效）
+                  </em>
                 </span>
               </div>
             </div>
             <div class="gate-row">
               <CheckCircleIcon
-                :class="{ pending: release.approvals.some((item) => item.status !== 'approved') }"
+                :class="{
+                  pending: release.approvals.some(
+                    (item) => item.status !== 'approved' && item.status !== 'rejected',
+                  ),
+                }"
               />
               <div>
                 <strong>四角色批量审批</strong>
@@ -353,6 +456,9 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
                     release.approvals.length
                   }}
                   已通过
+                  <em v-if="invalidatedApprovals.length">
+                    （{{ invalidatedApprovals.length }} 项已随新修订失效）
+                  </em>
                 </span>
               </div>
             </div>
@@ -375,6 +481,7 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
               v-for="confirmation in release.migrationConfirmations"
               :key="confirmation.id"
               class="migration-card"
+              :class="{ invalidated: confirmation.status === 'invalidated' }"
             >
               <div>
                 <strong>{{ dependencyName(confirmation.dependencyId) }}</strong>
@@ -382,13 +489,16 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
               </div>
               <StatusTag :value="confirmation.status" />
               <p>{{ confirmation.note || '尚未填写迁移确认说明。' }}</p>
+              <p v-if="confirmation.invalidatedReason" class="invalid-reason">
+                {{ confirmation.invalidatedReason }}
+              </p>
               <t-button
                 variant="outline"
                 size="small"
-                :disabled="confirmation.status === 'confirmed'"
+                :disabled="confirmation.status === 'confirmed' || confirmation.status === 'invalidated'"
                 @click="openMigration(confirmation.id)"
               >
-                确认迁移
+                {{ confirmation.status === 'invalidated' ? '已失效，重算后确认' : '确认迁移' }}
               </t-button>
             </article>
           </div>
@@ -399,19 +509,32 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
             <h2 class="panel-title">四角色审批</h2>
           </div>
           <div class="approval-list">
-            <label v-for="approval in release.approvals" :key="approval.id" class="approval-row">
+            <label
+              v-for="approval in release.approvals"
+              :key="approval.id"
+              class="approval-row"
+              :class="{ invalidated: approval.status === 'invalidated' }"
+            >
               <t-checkbox
                 :value="selectedApprovalIds.includes(approval.id)"
-                :disabled="approval.status === 'approved'"
+                :disabled="approval.status === 'approved' || approval.status === 'invalidated'"
                 @change="setApprovalChecked(approval.id, $event)"
               />
               <div>
                 <strong>{{ roleLabel(approval.role) }}</strong>
                 <span>{{ approval.actor }} · {{ approval.comment || '待填写意见' }}</span>
+                <span v-if="approval.invalidatedReason" class="invalid-reason">
+                  {{ approval.invalidatedReason }}
+                </span>
               </div>
               <StatusTag :value="approval.status" />
-              <t-button variant="text" size="small" @click.prevent="openApproval(approval)">
-                审批
+              <t-button
+                variant="text"
+                size="small"
+                :disabled="approval.status === 'invalidated'"
+                @click.prevent="openApproval(approval)"
+              >
+                {{ approval.status === 'invalidated' ? '已失效' : '审批' }}
               </t-button>
             </label>
           </div>
@@ -502,6 +625,56 @@ const setApprovalChecked = (approvalId: string, checked: unknown): void => {
 <style scoped>
 .filter-panel {
   padding: 14px 16px;
+}
+
+.drift-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border-color: #e6a23c;
+  background: #fff8ec;
+}
+
+.drift-banner ul {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #8a5a12;
+  font-size: 12px;
+}
+
+.drift-banner li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.drift-banner code {
+  color: #b35c00;
+}
+
+.rebuilt-hint {
+  margin: 0;
+  color: #8a6d1f;
+  font-size: 12px;
+}
+
+.invalid-reason {
+  color: #c45656 !important;
+}
+
+.migration-card.invalidated,
+.approval-row.invalidated {
+  opacity: 0.72;
+  background: #fff6f6;
+}
+
+.gate-row em {
+  color: #c45656;
+  font-style: normal;
 }
 
 .release-field {

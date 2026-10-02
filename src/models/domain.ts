@@ -88,27 +88,67 @@ export interface ContractDifference {
   enumChanges: string[]
 }
 
+export type MigrationConfirmationStatus = 'pending' | 'confirmed' | 'rejected' | 'invalidated'
+export type ReleaseApprovalStatus = 'pending' | 'approved' | 'rejected' | 'invalidated'
+
 export interface MigrationConfirmation {
   id: string
   dependencyId: string
   version: string
-  status: 'pending' | 'confirmed' | 'rejected'
+  status: MigrationConfirmationStatus
   reviewer: string
   note: string
   confirmedAt?: string
+  /** 确认轮次：候选按新修订重算后递增，保证重试幂等键不会命中已作废的旧确认 */
+  epoch: number
+  /** 候选契约修订或废弃阶段变化后，旧确认立即失效的原因 */
+  invalidatedReason?: string
 }
 
 export interface ReleaseApproval {
   id: string
   role: 'data' | 'product' | 'client' | 'qa'
   actor: string
-  status: 'pending' | 'approved' | 'rejected'
+  status: ReleaseApprovalStatus
   comment: string
   createdAt?: string
+  invalidatedReason?: string
+}
+
+/** 候选创建时冻结的单事件契约修订（事件、属性、平台规则一并固化） */
+export interface CandidateEventSnapshot {
+  eventId: string
+  key: string
+  displayName: string
+  category: string
+  description: string
+  trigger: string
+  status: EventStatus
+  version: string
+  owner: string
+  properties: EventProperty[]
+  platformRules: PlatformRule[]
+  frozenAt: string
+}
+
+/** 候选创建时冻结的废弃阶段 */
+export interface CandidateDeprecationSnapshot {
+  planId: string
+  eventId: string
+  replacementEventId?: string
+  status: DeprecationPlan['status']
+  stopCollectAt: string
+  retireAt: string
+  migrationNote: string
+  frozenAt: string
 }
 
 export interface ReleaseCandidate {
   id: string
+  /** 候选自身的乐观锁修订号，重建只接受先到版本 */
+  rev: number
+  /** 创建时冻结所基于的全局存储修订号（契约修订） */
+  baseRevision: number
   version: string
   title: string
   status: ReleaseStatus
@@ -117,12 +157,17 @@ export interface ReleaseCandidate {
   differences: ContractDifference[]
   migrationConfirmations: MigrationConfirmation[]
   approvals: ReleaseApproval[]
+  eventSnapshots: CandidateEventSnapshot[]
+  deprecationSnapshots: CandidateDeprecationSnapshot[]
   createdAt: string
+  rebuiltAt?: string
   publishedAt?: string
 }
 
 export interface DeprecationPlan {
   id: string
+  /** 计划自身的乐观锁修订号，推进/取消只接受先到版本 */
+  rev: number
   eventId: string
   replacementEventId?: string
   reason: string
@@ -131,6 +176,7 @@ export interface DeprecationPlan {
   retireAt: string
   status: 'planned' | 'announced' | 'stopped' | 'retired' | 'cancelled'
   migrationNote: string
+  updatedAt: string
 }
 
 export interface RollbackRecord {
@@ -165,6 +211,13 @@ export interface GovernanceState {
   rollbacks: RollbackRecord[]
   audit: AuditEvent[]
   currentVersion: string
+}
+
+/** 持久化信封：全局修订号 + 已落库的幂等写键，用于跨窗口乐观锁与重试去重 */
+export interface GovernanceEnvelope {
+  revision: number
+  state: GovernanceState
+  appliedWrites: Array<{ key: string; at: string }>
 }
 
 export interface ValidationIssue {

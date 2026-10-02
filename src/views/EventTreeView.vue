@@ -183,11 +183,20 @@ const saveEvent = async (): Promise<void> => {
     id: eventForm.id || createId('evt'),
     updatedAt: new Date().toISOString(),
   }
-  store.saveEvent(saved)
+  const outcome = await store.saveEvent(saved)
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
   selectedId.value = saved.id
   eventEditorVisible.value = false
   await invalidate()
-  await MessagePlugin.success('事件契约已保存')
+  const invalidatedCount = outcome.result.length
+  await MessagePlugin.success(
+    invalidatedCount
+      ? `事件契约已保存，${invalidatedCount} 个在审候选的旧审批与迁移确认已立即失效，需要按新修订重算`
+      : '事件契约已保存',
+  )
 }
 
 const openPropertyEditor = (property?: EventProperty): void => {
@@ -231,10 +240,14 @@ const saveProperty = async (): Promise<void> => {
     id: propertyForm.id || createId('prop'),
     eventId: selectedEvent.value.id,
   }
-  store.saveProperty(selectedEvent.value.id, saved)
+  const outcome = await store.saveProperty(selectedEvent.value.id, saved)
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
   propertyEditorVisible.value = false
   await invalidate()
-  await MessagePlugin.success('属性已保存')
+  await MessagePlugin.success('属性已保存，受影响在审候选的旧审批与迁移确认已按新修订校验')
 }
 
 const openRuleEditor = (rule?: PlatformRule): void => {
@@ -262,30 +275,40 @@ const saveRule = async (): Promise<void> => {
     await MessagePlugin.error('平台触发时机和负责人不能为空')
     return
   }
-  store.savePlatformRule(selectedEvent.value.id, {
+  const outcome = await store.savePlatformRule(selectedEvent.value.id, {
     ...structuredClone(platformForm),
     id: platformForm.id || createId('rule'),
     eventId: selectedEvent.value.id,
   })
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
   platformEditorVisible.value = false
   await invalidate()
-  await MessagePlugin.success('平台规则已保存')
+  await MessagePlugin.success('平台规则已保存，受影响在审候选的旧审批与迁移确认已按新修订校验')
 }
 
 const removeProperty = async (propertyId: string): Promise<void> => {
   if (!selectedEvent.value) return
-  store.deleteProperty(selectedEvent.value.id, propertyId)
+  const outcome = await store.deleteProperty(selectedEvent.value.id, propertyId)
+  if (!outcome.ok) {
+    await MessagePlugin.error(outcome.message)
+    return
+  }
   await invalidate()
-  await MessagePlugin.warning('属性已标记删除，仍引用它的下游依赖会进入迁移清单')
+  await MessagePlugin.warning('属性已标记删除，受影响在审候选的旧确认已立即失效')
 }
 
-const toggleProperty = (row: EventProperty, value: boolean): void => {
+const toggleProperty = async (row: EventProperty, value: boolean): Promise<void> => {
   if (!selectedEvent.value) return
-  store.saveProperty(selectedEvent.value.id, { ...row, required: value })
+  const outcome = await store.saveProperty(selectedEvent.value.id, { ...row, required: value })
+  if (!outcome.ok) await MessagePlugin.error(outcome.message)
+  else await invalidate()
 }
 
-const updateRequired = (row: EventProperty, value: unknown): void => {
-  toggleProperty(row, Boolean(value))
+const updateRequired = async (row: EventProperty, value: unknown): Promise<void> => {
+  await toggleProperty(row, Boolean(value))
 }
 
 const setPropertyType = (value: unknown): void => {
