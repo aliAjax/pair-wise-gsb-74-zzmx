@@ -1,8 +1,10 @@
 import type {
   AuditEvent,
+  DeprecationStage,
   DownstreamDependency,
   EventDefinition,
   EventVersionSnapshot,
+  FrozenEventContract,
   GovernanceState,
   ReleaseCandidate,
 } from './domain'
@@ -981,7 +983,65 @@ const audit: AuditEvent[] = [
   },
 ]
 
-export const createSeedState = (): GovernanceState => ({
+const freezeAt = (event: EventDefinition, frozenAt: string): FrozenEventContract => ({
+  eventId: event.id,
+  eventKey: event.key,
+  version: event.version,
+  status: event.status,
+  trigger: event.trigger,
+  properties: structuredClone(event.properties),
+  platformRules: structuredClone(event.platformRules),
+  frozenAt,
+})
+
+const freezeDeprecation = (
+  plan: GovernanceState['deprecations'][number],
+): DeprecationStage => ({
+  planId: plan.id,
+  eventId: plan.eventId,
+  status: plan.status,
+  reason: plan.reason,
+  owner: plan.owner,
+  stopCollectAt: plan.stopCollectAt,
+  retireAt: plan.retireAt,
+  replacementEventId: plan.replacementEventId,
+  migrationNote: plan.migrationNote,
+})
+
+const eventRevision = (event: EventDefinition): string =>
+  `evt:${event.id}@${event.version}@${event.updatedAt}`
+
+const withFrozenSnapshots = (state: GovernanceState): GovernanceState => {
+  const deprecationById = new Map(state.deprecations.map((plan) => [plan.eventId, plan]))
+  state.releases = state.releases.map((release) => {
+    const frozenContracts: FrozenEventContract[] = []
+    const deprecationStages: DeprecationStage[] = []
+    const revisionParts: string[] = []
+    release.eventIds.forEach((eventId) => {
+      const event = state.events.find((item) => item.id === eventId)
+      if (!event) return
+      frozenContracts.push(freezeAt(event, release.createdAt))
+      let part = eventRevision(event)
+      const plan = deprecationById.get(eventId)
+      if (plan && plan.status !== 'cancelled') {
+        deprecationStages.push(freezeDeprecation(plan))
+        part += `|dep:${plan.id}@${plan.status}@${plan.revision ?? 1}`
+      }
+      revisionParts.push(part)
+    })
+    return {
+      ...release,
+      frozenContracts,
+      deprecationStages,
+      revision: revisionParts.sort().join(';'),
+      stale: false,
+      idempotencyKey: `${release.version.trim()}::${[...release.eventIds].sort().join(',')}`,
+    }
+  })
+  return state
+}
+
+export const createSeedState = (): GovernanceState => withFrozenSnapshots({
   events,
   scenarios: [
     {
@@ -1035,6 +1095,7 @@ export const createSeedState = (): GovernanceState => ({
       retireAt: '2026-12-31',
       status: 'announced',
       migrationNote: '历史活动页分批切换，兼容集保留只读映射至 2027 年 3 月。',
+      revision: 1,
     },
   ],
   rollbacks: [
@@ -1052,4 +1113,5 @@ export const createSeedState = (): GovernanceState => ({
   ],
   audit,
   currentVersion: '2026.10.0',
+  stateVersion: 1,
 })

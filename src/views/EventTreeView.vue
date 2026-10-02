@@ -20,8 +20,8 @@ import type {
   PlatformRule,
   PropertyType,
 } from '@/models/domain'
-import { createId } from '@/services/repository'
-import { useGovernanceStore } from '@/stores/governance'
+import { cloneData, createId } from '@/services/repository'
+import { useGovernanceStore, type MutationResult } from '@/stores/governance'
 
 const store = useGovernanceStore()
 const queryClient = useQueryClient()
@@ -138,9 +138,22 @@ const invalidate = async (): Promise<void> => {
   await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
 }
 
+const settled = async (result: MutationResult, successMessage: string): Promise<boolean> => {
+  if (result.ok) {
+    await invalidate()
+    await MessagePlugin.success(successMessage)
+    return true
+  }
+  await MessagePlugin.error(
+    result.conflict ? `写入冲突，已从检查点恢复：${result.reason}` : result.reason,
+  )
+  await invalidate()
+  return false
+}
+
 const openEventEditor = (): void => {
   if (!selectedEvent.value) return
-  Object.assign(eventForm, structuredClone(selectedEvent.value))
+  Object.assign(eventForm, cloneData(selectedEvent.value))
   eventEditorVisible.value = true
 }
 
@@ -179,15 +192,15 @@ const saveEvent = async (): Promise<void> => {
     return
   }
   const saved: EventDefinition = {
-    ...structuredClone(eventForm),
+    ...cloneData(eventForm),
     id: eventForm.id || createId('evt'),
     updatedAt: new Date().toISOString(),
   }
-  store.saveEvent(saved)
-  selectedId.value = saved.id
-  eventEditorVisible.value = false
-  await invalidate()
-  await MessagePlugin.success('事件契约已保存')
+  const ok = await settled(store.saveEvent(saved), '事件契约已保存')
+  if (ok) {
+    selectedId.value = saved.id
+    eventEditorVisible.value = false
+  }
 }
 
 const openPropertyEditor = (property?: EventProperty): void => {
@@ -195,7 +208,7 @@ const openPropertyEditor = (property?: EventProperty): void => {
   Object.assign(
     propertyForm,
     property
-      ? structuredClone(property)
+      ? cloneData(property)
       : {
           id: '',
           eventId: selectedEvent.value.id,
@@ -227,14 +240,15 @@ const saveProperty = async (): Promise<void> => {
     return
   }
   const saved = {
-    ...structuredClone(propertyForm),
+    ...cloneData(propertyForm),
     id: propertyForm.id || createId('prop'),
     eventId: selectedEvent.value.id,
   }
-  store.saveProperty(selectedEvent.value.id, saved)
-  propertyEditorVisible.value = false
-  await invalidate()
-  await MessagePlugin.success('属性已保存')
+  const ok = await settled(
+    store.saveProperty(selectedEvent.value.id, saved),
+    '属性已保存',
+  )
+  if (ok) propertyEditorVisible.value = false
 }
 
 const openRuleEditor = (rule?: PlatformRule): void => {
@@ -242,7 +256,7 @@ const openRuleEditor = (rule?: PlatformRule): void => {
   Object.assign(
     platformForm,
     rule
-      ? structuredClone(rule)
+      ? cloneData(rule)
       : {
           id: '',
           eventId: selectedEvent.value.id,
@@ -262,26 +276,31 @@ const saveRule = async (): Promise<void> => {
     await MessagePlugin.error('平台触发时机和负责人不能为空')
     return
   }
-  store.savePlatformRule(selectedEvent.value.id, {
-    ...structuredClone(platformForm),
-    id: platformForm.id || createId('rule'),
-    eventId: selectedEvent.value.id,
-  })
-  platformEditorVisible.value = false
-  await invalidate()
-  await MessagePlugin.success('平台规则已保存')
+  const ok = await settled(
+    store.savePlatformRule(selectedEvent.value.id, {
+      ...cloneData(platformForm),
+      id: platformForm.id || createId('rule'),
+      eventId: selectedEvent.value.id,
+    }),
+    '平台规则已保存',
+  )
+  if (ok) platformEditorVisible.value = false
 }
 
 const removeProperty = async (propertyId: string): Promise<void> => {
   if (!selectedEvent.value) return
-  store.deleteProperty(selectedEvent.value.id, propertyId)
-  await invalidate()
-  await MessagePlugin.warning('属性已标记删除，仍引用它的下游依赖会进入迁移清单')
+  await settled(
+    store.deleteProperty(selectedEvent.value.id, propertyId),
+    '属性已标记删除，仍引用它的下游依赖会进入迁移清单',
+  )
 }
 
 const toggleProperty = (row: EventProperty, value: boolean): void => {
   if (!selectedEvent.value) return
-  store.saveProperty(selectedEvent.value.id, { ...row, required: value })
+  void settled(
+    store.saveProperty(selectedEvent.value.id, { ...row, required: value }),
+    '必填规则已更新',
+  )
 }
 
 const updateRequired = (row: EventProperty, value: unknown): void => {

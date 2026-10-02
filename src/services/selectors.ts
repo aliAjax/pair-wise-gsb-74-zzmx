@@ -4,6 +4,8 @@ import type {
   EventProperty,
   EventVersionSnapshot,
   GovernanceState,
+  MigrationConfirmation,
+  ReleaseApproval,
   ReleaseCandidate,
   SampleValidationResult,
   Severity,
@@ -329,16 +331,35 @@ export const validateSample = (
   return { valid: errors.length === 0, errors, warnings }
 }
 
+/** 当前生效的迁移确认：只统计仍在影响清单内、且未因旧修订作废的条目 */
+export const activeMigrationConfirmations = (
+  release: ReleaseCandidate,
+): MigrationConfirmation[] =>
+  release.migrationConfirmations.filter(
+    (item) => !item.invalid && release.affectedDependencyIds.includes(item.dependencyId),
+  )
+
+/** 当前生效的四角色审批：每个角色取候选上最新的一条 */
+export const activeApprovals = (release: ReleaseCandidate): ReleaseApproval[] => {
+  const latestByRole = new Map<ReleaseApproval['role'], ReleaseApproval>()
+  release.approvals.forEach((approval) => {
+    if (approval.invalid) return
+    latestByRole.set(approval.role, approval)
+  })
+  return [...latestByRole.values()]
+}
+
 export const releaseReadiness = (
   release: ReleaseCandidate,
   issues: ValidationIssue[],
 ): number => {
-  const migrationTotal = release.migrationConfirmations.length
-  const migrationDone = release.migrationConfirmations.filter(
-    (item) => item.status === 'confirmed',
-  ).length
-  const approvalTotal = release.approvals.length
-  const approvalDone = release.approvals.filter((item) => item.status === 'approved').length
+  if (release.stale) return 0
+  const confirmations = activeMigrationConfirmations(release)
+  const approvals = activeApprovals(release)
+  const migrationTotal = confirmations.length
+  const migrationDone = confirmations.filter((item) => item.status === 'confirmed').length
+  const approvalTotal = approvals.length
+  const approvalDone = approvals.filter((item) => item.status === 'approved').length
   const issuePenalty = Math.min(
     40,
     issues.filter((issue) => release.eventIds.includes(issue.entityId)).length * 8,

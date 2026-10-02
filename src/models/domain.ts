@@ -96,6 +96,10 @@ export interface MigrationConfirmation {
   reviewer: string
   note: string
   confirmedAt?: string
+  /** 基于旧契约修订作出的确认，在候选失效后立即作废 */
+  invalid?: boolean
+  invalidatedAt?: string
+  invalidatedReason?: ReleaseInvalidReason
 }
 
 export interface ReleaseApproval {
@@ -105,6 +109,42 @@ export interface ReleaseApproval {
   status: 'pending' | 'approved' | 'rejected'
   comment: string
   createdAt?: string
+  /** 基于旧契约修订作出的审批，在候选失效后立即作废 */
+  invalid?: boolean
+  invalidatedAt?: string
+  invalidatedReason?: ReleaseInvalidReason
+}
+
+/** 候选失效原因：事件契约修订、废弃计划推进或废弃计划取消 */
+export type ReleaseInvalidReason =
+  | 'contract_revised'
+  | 'deprecation_advanced'
+  | 'deprecation_cancelled'
+
+/** 候选创建时冻结的单事件契约：属性与平台规则不再随后续编辑漂移 */
+export interface FrozenEventContract {
+  eventId: string
+  eventKey: string
+  version: string
+  status: EventStatus
+  trigger: string
+  properties: EventProperty[]
+  platformRules: PlatformRule[]
+  frozenAt: string
+}
+
+/** 候选创建时冻结的废弃计划阶段 */
+export interface DeprecationStage {
+  planId: string
+  eventId: string
+  status: DeprecationPlan['status']
+  reason: string
+  owner: string
+  stopCollectAt: string
+  retireAt: string
+  replacementEventId?: string
+  migrationNote: string
+  updatedAt?: string
 }
 
 export interface ReleaseCandidate {
@@ -119,6 +159,17 @@ export interface ReleaseCandidate {
   approvals: ReleaseApproval[]
   createdAt: string
   publishedAt?: string
+  /** 创建时冻结的契约与废弃阶段，后续比较、发布均以此为准 */
+  frozenContracts?: FrozenEventContract[]
+  deprecationStages?: DeprecationStage[]
+  /** 冻结时对应的契约修订标识 */
+  revision?: string
+  /** 冻结后事件被修订或废弃计划被推进/取消，候选需要按新修订重算 */
+  stale?: boolean
+  invalidatedAt?: string
+  invalidatedReason?: ReleaseInvalidReason
+  /** 幂等键：同版本同事件范围的重复创建/重试只接受先到版本 */
+  idempotencyKey?: string
 }
 
 export interface DeprecationPlan {
@@ -131,6 +182,9 @@ export interface DeprecationPlan {
   retireAt: string
   status: 'planned' | 'announced' | 'stopped' | 'retired' | 'cancelled'
   migrationNote: string
+  /** 乐观并发版本，每次推进/取消递增，并发窗口只接受先到版本 */
+  revision?: number
+  updatedAt?: string
 }
 
 export interface RollbackRecord {
@@ -165,6 +219,8 @@ export interface GovernanceState {
   rollbacks: RollbackRecord[]
   audit: AuditEvent[]
   currentVersion: string
+  /** 持久化层乐观并发版本号，每次成功写入递增 */
+  stateVersion?: number
 }
 
 export interface ValidationIssue {

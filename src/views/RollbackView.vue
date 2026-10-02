@@ -45,9 +45,13 @@ const execute = async (): Promise<void> => {
     await MessagePlugin.error('版本、回滚原因、影响范围和证据编号不能为空')
     return
   }
-  store.executeRollback(form.releaseId, form.reason, form.scope, form.evidence)
-  rollbackVisible.value = false
-  await MessagePlugin.success('回滚指令已记录，请继续执行结果验证')
+  const result = store.executeRollback(form.releaseId, form.reason, form.scope, form.evidence)
+  if (result.ok) {
+    rollbackVisible.value = false
+    await MessagePlugin.success('回滚指令已记录，请继续执行结果验证')
+  } else {
+    await MessagePlugin.error(result.reason)
+  }
 }
 
 const openVerify = (rollbackId: string): void => {
@@ -61,9 +65,13 @@ const verify = async (): Promise<void> => {
     await MessagePlugin.error('验证证据不能为空')
     return
   }
-  store.verifyRollback(selectedRollbackId.value, verifyForm.evidence)
-  verifyVisible.value = false
-  await MessagePlugin.success('回滚验证结果已记录')
+  const result = store.verifyRollback(selectedRollbackId.value, verifyForm.evidence)
+  if (result.ok) {
+    verifyVisible.value = false
+    await MessagePlugin.success('回滚验证结果已记录')
+  } else {
+    await MessagePlugin.error(result.reason)
+  }
 }
 </script>
 

@@ -24,6 +24,8 @@ const labels: Record<string, string> = {
   pending: '待处理',
   confirmed: '已确认',
   rejected: '已驳回',
+  invalid: '已失效',
+  stale: '需重算',
   planned: '已计划',
   announced: '已公告',
   stopped: '已停采',
@@ -43,6 +45,8 @@ const theme = computed(() => {
   const themes: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger'> = {
     critical: 'danger',
     rejected: 'danger',
+    invalid: 'danger',
+    stale: 'warning',
     retired: 'danger',
     deleted_property_referenced: 'danger',
     high: 'warning',

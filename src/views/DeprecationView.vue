@@ -1,14 +1,23 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
+import { useQueryClient } from '@tanstack/vue-query'
 import { AddIcon, Edit1Icon, ErrorTriangleIcon } from 'tdesign-icons-vue-next'
 import { MessagePlugin } from 'tdesign-vue-next'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { DeprecationPlan } from '@/models/domain'
-import { createId } from '@/services/repository'
-import { useGovernanceStore } from '@/stores/governance'
+import { cloneData, createId } from '@/services/repository'
+import { useGovernanceStore, type MutationResult } from '@/stores/governance'
 
 const store = useGovernanceStore()
+const queryClient = useQueryClient()
+
+const invalidateQueries = async (): Promise<void> => {
+  await queryClient.invalidateQueries({ queryKey: ['release'] })
+  await queryClient.invalidateQueries({ queryKey: ['releases'] })
+  await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+  await queryClient.invalidateQueries({ queryKey: ['lineage'] })
+}
 const editorVisible = ref(false)
 const form = reactive<DeprecationPlan>({
   id: '',
@@ -20,6 +29,7 @@ const form = reactive<DeprecationPlan>({
   retireAt: '',
   status: 'planned',
   migrationNote: '',
+  revision: 1,
 })
 
 const statusOptions = [
@@ -45,7 +55,7 @@ const openEditor = (plan?: DeprecationPlan): void => {
   Object.assign(
     form,
     plan
-      ? structuredClone(plan)
+      ? cloneData(plan)
       : {
           id: '',
           eventId: store.data.events.find((event) => event.status === 'published')?.id ?? '',
@@ -56,9 +66,23 @@ const openEditor = (plan?: DeprecationPlan): void => {
           retireAt: '',
           status: 'planned',
           migrationNote: '',
+          revision: 1,
         } satisfies DeprecationPlan,
   )
   editorVisible.value = true
+}
+
+const settled = async (result: MutationResult, successMessage: string): Promise<boolean> => {
+  if (result.ok) {
+    await invalidateQueries()
+    await MessagePlugin.success(successMessage)
+    return true
+  }
+  await MessagePlugin.error(
+    result.conflict ? `写入冲突，已从检查点恢复：${result.reason}` : result.reason,
+  )
+  await invalidateQueries()
+  return false
 }
 
 const savePlan = async (): Promise<void> => {
@@ -76,9 +100,11 @@ const savePlan = async (): Promise<void> => {
     await MessagePlugin.error('停用日期必须晚于停采日期')
     return
   }
-  store.saveDeprecation({ ...structuredClone(form), id: form.id || createId('plan') })
-  editorVisible.value = false
-  await MessagePlugin.success('废弃计划已保存')
+  const ok = await settled(
+    store.saveDeprecation({ ...cloneData(form), id: form.id || createId('plan') }),
+    '废弃计划已保存',
+  )
+  if (ok) editorVisible.value = false
 }
 
 const advance = async (plan: DeprecationPlan): Promise<void> => {
@@ -86,8 +112,18 @@ const advance = async (plan: DeprecationPlan): Promise<void> => {
   const index = sequence.indexOf(plan.status)
   const next = plan.status === 'cancelled' ? 'planned' : sequence[Math.min(index + 1, 3)]
   if (!next) return
-  store.saveDeprecation({ ...plan, status: next })
-  await MessagePlugin.success(`废弃计划已推进到 ${next}`)
+  // 携带最新 revision 提交；其他窗口已推进时会被拒绝并提示
+  await settled(
+    store.saveDeprecation({ ...plan, status: next, revision: plan.revision ?? 1 }),
+    `废弃计划已推进到 ${next}`,
+  )
+}
+
+const cancel = async (plan: DeprecationPlan): Promise<void> => {
+  await settled(
+    store.saveDeprecation({ ...plan, status: 'cancelled', revision: plan.revision ?? 1 }),
+    '废弃计划已取消，相关发布候选的冻结阶段已失效',
+  )
 }
 </script>
 
@@ -159,6 +195,15 @@ const advance = async (plan: DeprecationPlan): Promise<void> => {
           <t-button variant="outline" size="small" @click="openEditor(item.plan)">
             <template #icon><Edit1Icon /></template>
             编辑
+          </t-button>
+          <t-button
+            v-if="item.plan.status !== 'retired' && item.plan.status !== 'cancelled'"
+            theme="danger"
+            variant="outline"
+            size="small"
+            @click="cancel(item.plan)"
+          >
+            取消计划
           </t-button>
           <t-button
             v-if="item.plan.status !== 'retired' && item.plan.status !== 'cancelled'"

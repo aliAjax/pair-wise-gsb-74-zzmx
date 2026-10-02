@@ -12,7 +12,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useDashboardQuery, useValidationQuery } from '@/composables/useGovernanceQueries'
-import { releaseReadiness } from '@/services/selectors'
+import { activeApprovals, activeMigrationConfirmations, releaseReadiness } from '@/services/selectors'
 import { useGovernanceStore } from '@/stores/governance'
 
 const store = useGovernanceStore()
@@ -26,12 +26,17 @@ const readiness = computed(() =>
   currentRelease.value ? releaseReadiness(currentRelease.value, issues.value) : 0,
 )
 
-const pendingMigrations = computed(
-  () =>
-    currentRelease.value?.migrationConfirmations.filter((item) => item.status !== 'confirmed') ?? [],
+const activeMigrations = computed(() =>
+  currentRelease.value ? activeMigrationConfirmations(currentRelease.value) : [],
 )
-const pendingApprovals = computed(
-  () => currentRelease.value?.approvals.filter((item) => item.status === 'pending') ?? [],
+const activeApprovalList = computed(() =>
+  currentRelease.value ? activeApprovals(currentRelease.value) : [],
+)
+const pendingMigrations = computed(() =>
+  activeMigrations.value.filter((item) => item.status !== 'confirmed'),
+)
+const pendingApprovals = computed(() =>
+  activeApprovalList.value.filter((item) => item.status === 'pending'),
 )
 </script>
 
@@ -76,7 +81,10 @@ const pendingApprovals = computed(
       <section class="panel release-panel">
         <div class="panel-header">
           <h2 class="panel-title">{{ currentRelease?.title ?? '发布评审' }}</h2>
-          <StatusTag v-if="currentRelease" :value="currentRelease.status" />
+          <StatusTag v-if="currentRelease" :value="currentRelease.stale ? 'stale' : currentRelease.status" />
+        </div>
+        <div v-if="currentRelease?.stale" class="stale-note">
+          候选已随契约修订/废弃计划变化失效，请前往发布评审页按新修订重算。
         </div>
         <template v-if="currentRelease">
           <div class="release-summary">
@@ -101,17 +109,15 @@ const pendingApprovals = computed(
             <div class="progress-head">
               <span>迁移确认</span>
               <strong>
-                {{ currentRelease.migrationConfirmations.length - pendingMigrations.length }}/{{
-                  currentRelease.migrationConfirmations.length
-                }}
+                {{ activeMigrations.length - pendingMigrations.length }}/{{ activeMigrations.length }}
               </strong>
             </div>
             <t-progress
               :percentage="
-                currentRelease.migrationConfirmations.length
+                activeMigrations.length
                   ? Math.round(
-                      ((currentRelease.migrationConfirmations.length - pendingMigrations.length) /
-                        currentRelease.migrationConfirmations.length) *
+                      ((activeMigrations.length - pendingMigrations.length) /
+                        activeMigrations.length) *
                         100,
                     )
                   : 100
@@ -123,17 +129,17 @@ const pendingApprovals = computed(
             <div class="progress-head">
               <span>批量审批</span>
               <strong>
-                {{ currentRelease.approvals.length - pendingApprovals.length }}/{{
-                  currentRelease.approvals.length
+                {{ activeApprovalList.length - pendingApprovals.length }}/{{
+                  activeApprovalList.length
                 }}
               </strong>
             </div>
             <t-progress
               :percentage="
-                currentRelease.approvals.length
+                activeApprovalList.length
                   ? Math.round(
-                      ((currentRelease.approvals.length - pendingApprovals.length) /
-                        currentRelease.approvals.length) *
+                      ((activeApprovalList.length - pendingApprovals.length) /
+                        activeApprovalList.length) *
                         100,
                     )
                   : 100
@@ -223,6 +229,17 @@ const pendingApprovals = computed(
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
   gap: 16px;
+}
+
+.stale-note {
+  margin: 0 16px 12px;
+  padding: 9px 12px;
+  border-left: 3px solid #d54941;
+  border-radius: 4px;
+  background: #fdf3f2;
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .release-summary {
